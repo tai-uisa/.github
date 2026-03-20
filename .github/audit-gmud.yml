@@ -1,0 +1,68 @@
+name: Auditoria Rigorosa de GMUD (Fluig + Google Chat)
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  compliance-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 1. Checkout do Código
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 2. Validar Padrão GMUD no Commit
+        id: check
+        run: |
+          MSG=$(git log -1 --pretty=%B)
+          if [[ ! "$MSG" =~ \[GMUD-[0-9]+\] ]]; then
+            echo "STATUS=FAIL" >> $GITHUB_ENV
+          else
+            echo "STATUS=PASS" >> $GITHUB_ENV
+          fi
+
+      - name: 3. Abrir Chamado Classificado no Fluig (API)
+        if: env.STATUS == 'FAIL'
+        id: fluig_api
+        env:
+          URL_API: ${{ secrets.FLUIG_API_URL }}
+          KEY_API: ${{ secrets.FLUIG_API_KEY }}
+        run: |
+          JSON_DATA=$(cat <<EOF
+          {
+            "titulo": "ALERTA GMUD: ${{ github.repository }}",
+            "descricao": "Violação de processo detectada.\nAutor: ${{ github.actor }}\nCommit: ${{ github.event.head_commit.url }}\nData: $(date +'%d/%m/%Y %H:%M:%S')",
+            "usuario": "itsm.fluig@uisa.com.br",
+            "servico": "41311",
+            "usuario_transferir":"jonas.fonseca@uisa.com.br", 
+            "telefone": "6533323500"
+          }
+          EOF
+          )
+
+          # Chamada da API
+          RESPONSE=$(curl -s -X POST "$URL_API" \
+            -H "API-KEY: $KEY_API" \
+            -H "Content-Type: application/json" \
+            -d "$JSON_DATA")
+          
+          # Verifica se a resposta é um número (ID do chamado)
+          if [[ "$RESPONSE" =~ ^[0-9]+$ ]]; then
+            echo "CHAMADO_ID=$RESPONSE" >> $GITHUB_ENV
+            echo "Chamado aberto: $RESPONSE"
+          else
+            echo "CHAMADO_ID=ERRO-AO-GERAR" >> $GITHUB_ENV
+            echo "Erro na API do Fluig: $RESPONSE"
+          fi
+
+      - name: 4. Alerta no Google Chat com Número do Chamado
+        if: env.STATUS == 'FAIL'
+        run: |
+          curl -X POST -H 'Content-Type: application/json' \
+          '${{ secrets.GOOGLE_CHAT_WEBHOOK }}' \
+          -d '{
+            "text": "🚨 *VIOLAÇÃO DE PROCESSO DETECTADA GitHub*\n\n*Repositório:* ${{ github.repository }}\n*Autor:* ${{ github.actor }}\n*Commit:* ${{ github.event.head_commit.message }}\n\n✅ *CHAMADO FLUIG ABERTO:* `${{ env.CHAMADO_ID }}`\n⚠️ _A gestão foi notificada via chamado classificado (Serviço 41311)._"
+          }'
